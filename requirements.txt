@@ -1,0 +1,36 @@
+# Core dependencies for Backstory Consistency Verification System
+# Python 3.8+ required
+
+# Deep Learning & Transformers
+torch>=2.0.0
+transformers>=4.35.0
+accelerate>=0.24.0
+bitsandbytes>=0.41.0  # For 4-bit quantization
+sentence-transformers>=2.2.2
+
+# Embedding & Reranking
+FlagEmbedding>=1.2.0  # For BGE models
+
+# Retrieval & Vector Store
+pathway>=0.13.0  # REQUIRED by competition
+faiss-cpu>=1.7.4  # Backup option
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+
+# Utilities
+tqdm>=4.65.0
+pyyaml>=6.0
+
+# Optional: GPU acceleration
+# Use faiss-gpu instead of faiss-cpu if you have CUDA:
+# faiss-gpu>=1.7.4
+
+# Optional: Enhanced logging
+colorlog>=6.7.0
