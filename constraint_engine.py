@@ -840,11 +840,23 @@ def search_for_violations_with_nli(
         verify_output = generate_with_qwen(model, tokenizer, verify_prompt, max_new_tokens=120)
         verify_text = parse_llm_output(verify_output, expected_format="text")
 
-        # Try to parse JSON result
+        # Try to parse JSON result with robust error handling
         try:
+            # Strip whitespace and try to extract JSON if embedded in text
+            verify_text = verify_text.strip()
+            
+            # Try to find JSON object in text (in case LLM adds extra text)
+            if not verify_text.startswith('{'):
+                # Search for first { and last }
+                start_idx = verify_text.find('{')
+                end_idx = verify_text.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    verify_text = verify_text[start_idx:end_idx+1]
+            
             verify_json = json.loads(verify_text)
         except Exception as e:
-            print(f"  → Failed to parse JSON from verifier: {e}; raw: {verify_text[:200]}")
+            print(f"  → Failed to parse JSON from verifier: {e}")
+            print(f"     Raw output: {verify_text[:200]}")
             continue
 
         # Expected boolean fields
