@@ -321,10 +321,10 @@ def find_constraint_establishment(vector_store, model, tokenizer, constraint, re
 
 def generate_violation_query(model, tokenizer, constraint):
     """
-    Generate a targeted search query to find potential violations.
+    Generate query using LLM to find CONTRADICTIONS.
     
-    Purpose: Create semantically relevant query for dense retrieval.
-    Example: "John is a doctor" → "John lawyer attorney legal profession"
+    CRITICAL: Query must seek OPPOSITE/CONTRADICTORY content, not confirmations.
+    Use LLM to generate semantically opposite queries.
     
     Args:
         model: Qwen LLM
@@ -339,19 +339,21 @@ def generate_violation_query(model, tokenizer, constraint):
     print("="*60)
     print(f"Constraint: {constraint[:80]}...")
     
-    # Use a strict, deterministic template instead of free-form LLM queries.
-    # Heuristic: first token/word is main_entity, remainder is core_action.
-    # Template: "Later events involving {main_entity} related to {core_action}"
-    print("\nUsing strict template for violation query generation (no LLM)")
-    parts = constraint.strip().split()
-    if not parts:
-        query = constraint
-    else:
-        main_entity = parts[0]
-        core_action = " ".join(parts[1:]) if len(parts) > 1 else "events"
-        query = f"Later events involving {main_entity} related to {core_action}"
-
-    print(f"\n✓ Generated strict query: {query}")
+    # Use LLM to generate contradiction-seeking query
+    prompt = prompts.VIOLATION_QUERY_PROMPT.format(constraint=constraint)
+    output = generate_with_qwen(model, tokenizer, prompt, max_new_tokens=100)
+    query = parse_llm_output(output, expected_format="plain_text")
+    
+    # Fallback if LLM fails - extract main concept and negate
+    if not query or len(query.strip()) < 5:
+        print("⚠️ LLM query generation failed, using negation fallback")
+        words = constraint.split()
+        if len(words) > 2:
+            query = f"NOT {' '.join(words[:3])}"
+        else:
+            query = f"opposite of {constraint}"
+    
+    print(f"\n✓ Generated query: {query}")
 
     log_step(
         "generate_violation_query",
@@ -711,6 +713,12 @@ def search_for_violations_with_nli(
     
     print(f"Retrieved {len(retrieved_chunks)} chunks")
     
+    print(f"\n[DEBUG] Retrieval results:")
+    print(f"  Retrieved: {len(retrieved_chunks)} chunks")
+    if retrieved_chunks:
+        top_scores = [f"{c.get('score', 0):.3f}" for c in retrieved_chunks[:5]]
+        print(f"  Top 5 scores: {top_scores}")
+    
     # Step 2: Rerank chunks
     print(f"\nReranking with bge-reranker-large...")
     pairs = [[violation_query, chunk['text']] for chunk in retrieved_chunks]
@@ -752,6 +760,14 @@ def search_for_violations_with_nli(
                 nli_filtered.append(chunk)
             
         print(f"NLI filter: {len(nli_filtered)}/{len(top_chunks)} chunks flagged as potential contradictions")
+        
+        print(f"\n[DEBUG] NLI filtering results:")
+        print(f"  Filtered: {len(nli_filtered)}/{len(top_chunks)} chunks")
+        if nli_filtered:
+            nli_scores = [f"{c.get('nli_score', 0):.3f}" for c in nli_filtered[:3]]
+            print(f"  Top 3 NLI scores: {nli_scores}")
+        else:
+            print(f"  ⚠️ NLI filtered out everything!")
         
         # EMERGENCY FIX: If NLI filters out everything, use top 2 chunks anyway
         if not nli_filtered and len(top_chunks) > 0:
@@ -840,10 +856,10 @@ def search_for_violations_with_nli(
 
         print(f"  Verifier JSON: same_entity={same_entity}, same_event={same_event}, logical_opposition={logical_opposition}, time_conflict={time_conflict}, final={final_decision}")
 
-        # SIMPLIFIED LOGIC: Only require same_entity AND logical_opposition
-        # Many contradictions don't involve time or repeat the same event phrasing
-        if final_decision != "VIOLATES" or not (same_entity and logical_opposition):
-            print(f"  → Verifier did not confirm as a strict violation (final={final_decision}, same_entity={same_entity}, logical_opposition={logical_opposition})")
+        # ULTRA-SIMPLIFIED: Only require logical_opposition (entities often have different names in novels)
+        # Novels use pronouns, paraphrasing, implicit references - same_entity check is too strict
+        if final_decision != "VIOLATES" or not logical_opposition:
+            print(f"  → Verifier: logical_opposition={logical_opposition}, final={final_decision}")
             continue
 
         # Passed all checks: record confirmed violation
@@ -862,6 +878,10 @@ def search_for_violations_with_nli(
         # Continue scanning to collect multiple confirmations (we require >= MIN_CONFIRMED_VIOLATIONS)
 
     # Final decision: require at least MIN_CONFIRMED_VIOLATIONS confirmations
+    print(f"\n[DEBUG] Verification complete:")
+    print(f"  Confirmed violations: {len(confirmed)}")
+    print(f"  Required: {config.MIN_CONFIRMED_VIOLATIONS}")
+    
     if len(confirmed) >= getattr(config, 'MIN_CONFIRMED_VIOLATIONS', 1):
         # Aggregate evidence: return list of confirmations as evidence
         print(f"\n✗ Statement marked INCONSISTENT: {len(confirmed)} confirmed violations (required {config.MIN_CONFIRMED_VIOLATIONS})")
