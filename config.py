@@ -34,7 +34,7 @@ CHUNK_OVERLAP = 400  # overlap (~100 tokens) to preserve context boundaries
 # Retrieval parameters (OPTIMIZED FOR ACCURACY)
 RETRIEVAL_TOP_K = 40  # Raised to increase recall (user requested)
 RERANK_TOP_K = 5  # Narrower rerank set to focus on top candidates
-RERANK_MIN_SCORE = 0.15  # Minimum reranker score to consider a candidate
+RERANK_MIN_SCORE = 0.05  # LOWERED from 0.15 - was filtering out valid candidates
 
 # BM25 hybrid retrieval
 BM25_ENABLED = True  # Lexical fallback
@@ -67,15 +67,15 @@ DO_SAMPLE = True  # Required for temperature > 0
 # ============================================================================
 
 # Max constraints to extract per statement (CAPPED FOR ACCURACY)
-MAX_CONSTRAINTS_PER_STATEMENT = 2  # Strict cap as requested
+MAX_CONSTRAINTS_PER_STATEMENT = 4  # INCREASED from 2 - was too restrictive
 
 # Violatable constraint types (ALL types are violatable)
 VIOLATABLE_TYPES = {"PROHIBITION", "BELIEF", "MOTIVATION", "FEAR", "BACKGROUND_FACT"}
 # Dataset treats background facts as contradictory when changed - must include them
 
 # NLI threshold configuration (OPTIMIZED FOR MNLI ON LONG TEXT)
-NLI_CONTRADICTION_THRESHOLD = 0.50  # Lowered for candidate filtering (LLM verifier is final gate)
-NLI_ENTAILMENT_THRESHOLD = 0.60  # Threshold for positive entailment confirmation
+NLI_CONTRADICTION_THRESHOLD = 0.45  # LOWERED from 0.70 - was too strict!
+NLI_ENTAILMENT_THRESHOLD = 0.45  # LOWERED from 0.60 - more lenient
 
 # Violation scoring weights (SOFT AGGREGATION)
 SCORE_WEIGHT_NLI = 0.5
@@ -97,13 +97,13 @@ VIOLATION_CONFIDENCE_THRESHOLD = 0.8
 MAX_VIOLATION_SEARCH_ITERATIONS = 1  # Keep refinement disabled to limit runtime
 
 # Position window (how far after establishment we consider violations)
-VIOLATION_POSITION_WINDOW = 80  # Only consider violations within this many positions after establishment
+VIOLATION_POSITION_WINDOW = 300  # INCREASED from 80 - was too narrow!
 
 # Minimum number of confirmed violations required to mark statement inconsistent
 MIN_CONFIRMED_VIOLATIONS = 1  # Single violation is enough (most contradictions are single-event)
 
 # Minimum retrieval score to auto-accept establishment (bypass LLM check)
-ESTABLISHMENT_AUTO_ACCEPT_SCORE = 0.65  # High semantic match = likely established
+ESTABLISHMENT_AUTO_ACCEPT_SCORE = 0.60  # Slightly lowered from 0.65
 
 # ============================================================================
 # CONSTRAINT-TYPE-SPECIFIC VALIDATION
