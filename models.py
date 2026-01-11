@@ -246,9 +246,60 @@ def check_contradiction_nli(nli_model, nli_tokenizer, premise, hypothesis, retur
     probs = torch.softmax(logits, dim=1)[0]
     contradiction_score = probs[0].item()  # Probability of contradiction
     
+    # Use NLI_CONTRADICTION_THRESHOLD (renamed from NLI_WEAK_THRESHOLD)
+    threshold = getattr(config, 'NLI_CONTRADICTION_THRESHOLD', 0.5)
+    
     # Return score or threshold decision
     if return_score:
-        return contradiction_score >= config.NLI_WEAK_THRESHOLD, contradiction_score
+        return contradiction_score >= threshold, contradiction_score
     else:
-        # High-recall mode: flag if score >= weak threshold
-        return contradiction_score >= config.NLI_WEAK_THRESHOLD
+        return contradiction_score >= threshold
+
+
+def check_entailment_nli(nli_model, nli_tokenizer, premise, hypothesis, return_score=False):
+    """
+    Use NLI model to check if hypothesis is ENTAILED by premise.
+    
+    CRITICAL FOR CONSISTENCY PROOF: A statement is consistent only if
+    we can find positive entailment evidence, not just absence of contradiction.
+    
+    Args:
+        nli_model: RoBERTa-large-MNLI model
+        nli_tokenizer: Corresponding tokenizer
+        premise: The chunk from narrative (evidence)
+        hypothesis: The constraint to verify
+        return_score: If True, return (is_entailment, score); else just bool
+        
+    Returns:
+        bool or tuple: True if entailment found, or (bool, float) if return_score=True
+    """
+    import config
+    
+    # Tokenize input
+    inputs = nli_tokenizer(
+        premise,
+        hypothesis,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+        padding=True
+    )
+    
+    # Move to same device as model
+    inputs = {k: v.to(nli_model.device) for k, v in inputs.items()}
+    
+    # Get predictions
+    with torch.no_grad():
+        outputs = nli_model(**inputs)
+        logits = outputs.logits
+    
+    # RoBERTa-large-MNLI labels: 0=contradiction, 1=neutral, 2=entailment
+    probs = torch.softmax(logits, dim=1)[0]
+    entailment_score = probs[2].item()  # Probability of entailment
+    
+    threshold = getattr(config, 'NLI_ENTAILMENT_THRESHOLD', 0.6)
+    
+    if return_score:
+        return entailment_score >= threshold, entailment_score
+    else:
+        return entailment_score >= threshold

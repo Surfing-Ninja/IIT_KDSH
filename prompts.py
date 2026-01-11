@@ -206,44 +206,38 @@ Output ONLY one word (REVISION or VIOLATION):"""
 # 5.5 TWO-PASS VERIFICATION (Second Check for TRUE VIOLATIONS)
 # ============================================================================
 
-TRUE_VIOLATION_CHECK_PROMPT = """You previously judged that this passage VIOLATES a constraint.
+TRUE_VIOLATION_CHECK_PROMPT = """
+You previously judged that this passage VIOLATES a constraint.
 
-Now verify: Does this evidence make the constraint **logically impossible** to be true,
-or could both statements coexist without contradiction?
+Now verify using a strict JSON response. Output ONLY valid JSON, no extra text.
 
-Constraint:
-"{constraint}"
-
-Evidence from narrative:
-"{evidence}"
+Return an object with the following boolean fields and a final verdict:
+{
+    "same_entity": boolean,        # whether the later passage refers to the same primary entity
+    "same_event": boolean,         # whether the passage is about the same event/claim
+    "logical_opposition": boolean, # whether the passage directly opposes the claim (polarity mismatch)
+    "time_conflict": boolean,      # whether the passage places the event at an overlapping/contradicting time
+    "final": "VIOLATES"|"DOES_NOT_VIOLATE"  # final decision; set to VIOLATES only if all booleans are true
+}
 
 RULES:
-- TRUE_VIOLATION: The evidence makes the constraint factually impossible
-- COMPATIBLE: Both could be true (different time, perspective, or interpretation)
+- Output MUST be valid JSON only. No explanation, no extra text, no lists.
+- The field "final" MUST be "VIOLATES" only if all boolean fields are true; otherwise it should be "DOES_NOT_VIOLATE".
 
-EXAMPLES:
+Constraint: {constraint}
+Evidence from narrative: {evidence}
 
-Constraint: "John is a doctor"
-Evidence: "Dr. John performed surgery at the hospital"
-Answer: COMPATIBLE (supports, not contradicts)
-
+Examples (for developer reference only, do NOT emit these):
 Constraint: "John has never been to Paris"
 Evidence: "John walked through the streets of Paris"
-Answer: TRUE_VIOLATION (logically impossible)
-
-Constraint: "Sarah hates dogs"
-Evidence: "Sarah loved playing with her neighbor's puppy"
-Answer: TRUE_VIOLATION (opposite emotion)
+=> {"same_entity": true, "same_event": true, "logical_opposition": true, "time_conflict": true, "final": "VIOLATES"}
 
 Constraint: "The box is red"
-Evidence: "The crimson box sat on the shelf"
-Answer: COMPATIBLE (synonym, same fact)
+Evidence: "She opened the crimson container"
+=> {"same_entity": true, "same_event": true, "logical_opposition": false, "time_conflict": false, "final": "DOES_NOT_VIOLATE"}
 
-Constraint: "He was eighteen in Tasmania"
-Evidence: "At age twenty-five, he lived in Sydney"
-Answer: COMPATIBLE (different times, both can be true)
-
-Output ONLY one word (TRUE_VIOLATION or COMPATIBLE):"""
+Output only the JSON object.
+"""
 
 # ============================================================================
 # 6. RETRIEVAL QUALITY CHECK (Binary Output)

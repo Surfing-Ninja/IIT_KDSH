@@ -27,6 +27,7 @@ DECISION RULE:
 """
 
 import json
+import json
 import config
 import prompts
 from models import generate_with_qwen
@@ -36,6 +37,130 @@ from evaluation_utils import (
     sanity_check,
     validate_retrieval_quality
 )
+
+
+# ============================================================================
+# CONSTRAINT-TYPE-SPECIFIC VALIDATION HELPERS
+# ============================================================================
+
+def validate_constraint_type_evidence(constraint_type, chunk_text):
+    """
+    Validate that the evidence chunk contains appropriate markers for the constraint type.
+    
+    This prevents systematic false positives where:
+    - MOTIVATION constraints get "violated" by random narrative scenes
+    - BELIEF constraints get violated by neutral dialogue
+    
+    Args:
+        constraint_type: One of BACKGROUND_FACT, PROHIBITION, MOTIVATION, BELIEF, FEAR
+        chunk_text: The candidate violation text to validate
+        
+    Returns:
+        bool: True if chunk contains appropriate evidence markers for this constraint type
+    """
+    text_lower = chunk_text.lower()
+    
+    if constraint_type.upper() == "MOTIVATION":
+        # Require mental state / intention language
+        keywords = getattr(config, 'MOTIVATION_KEYWORDS', set())
+        if not keywords:
+            return True  # No keywords configured = accept all
+        return any(kw in text_lower for kw in keywords)
+    
+    elif constraint_type.upper() == "BELIEF":
+        # Require belief markers (think, believe, feel, know, etc.)
+        keywords = getattr(config, 'BELIEF_KEYWORDS', set())
+        if not keywords:
+            return True
+        return any(kw in text_lower for kw in keywords)
+    
+    elif constraint_type.upper() == "PROHIBITION":
+        # Require action-indicating language (did, went, made, etc.)
+        keywords = getattr(config, 'PROHIBITION_ACTION_KEYWORDS', set())
+        if not keywords:
+            return True
+        return any(kw in text_lower for kw in keywords)
+    
+    elif constraint_type.upper() == "BACKGROUND_FACT":
+        # Background facts need event-level contradiction - accept any chunk
+        # (the contradiction detection itself handles this)
+        return True
+    
+    elif constraint_type.upper() == "FEAR":
+        # Fear requires emotional or behavioral markers
+        fear_markers = {"afraid", "fear", "scared", "terrified", "panic", "dread", "anxious", "worried"}
+        return any(kw in text_lower for kw in fear_markers)
+    
+    # Unknown type - accept by default
+    return True
+
+
+def check_entailment_for_constraint(
+    nli_model,
+    nli_tokenizer,
+    vector_store,
+    constraint_text,
+    established_at,
+    top_k=5
+):
+    """
+    Check if there is positive entailment evidence for a constraint.
+    
+    CRITICAL: This provides POSITIVE PROOF of consistency.
+    Without this, we only know "no contradiction found" which is NOT the same as "consistent".
+    
+    Args:
+        nli_model: RoBERTa-large-MNLI
+        nli_tokenizer: NLI tokenizer
+        vector_store: PathwayVectorStore
+        constraint_text: The constraint to verify
+        established_at: Position where constraint was established
+        top_k: Number of chunks to check for entailment
+        
+    Returns:
+        tuple: (entailment_found: bool, max_score: float, evidence_chunk: str or None)
+    """
+    from models import check_entailment_nli
+    
+    if nli_model is None or nli_tokenizer is None:
+        print("⚠ NLI model not available for entailment check")
+        return False, 0.0, None
+    
+    print(f"\n[ENTAILMENT CHECK] Looking for positive support for constraint...")
+    
+    # Retrieve chunks around and after establishment to find entailment evidence
+    retrieved_chunks = vector_store.retrieve(
+        query=constraint_text,
+        position_filter=None,  # Search entire document for entailment
+        top_k=top_k * 2  # Get more candidates
+    )
+    
+    if not retrieved_chunks:
+        print("  No chunks retrieved for entailment check")
+        return False, 0.0, None
+    
+    max_entailment_score = 0.0
+    best_evidence = None
+    
+    for chunk in retrieved_chunks[:top_k]:
+        is_entailment, score = check_entailment_nli(
+            nli_model,
+            nli_tokenizer,
+            premise=chunk['text'],  # Narrative as premise
+            hypothesis=constraint_text,  # Constraint as hypothesis
+            return_score=True
+        )
+        
+        if score > max_entailment_score:
+            max_entailment_score = score
+            best_evidence = chunk['text'][:300]
+        
+        if is_entailment:
+            print(f"  ✓ Entailment found! Score: {score:.3f}")
+            return True, score, chunk['text'][:300]
+    
+    print(f"  No strong entailment found (max score: {max_entailment_score:.3f})")
+    return False, max_entailment_score, best_evidence
 
 
 def extract_constraints(model, tokenizer, statement):
@@ -247,19 +372,26 @@ def generate_violation_query(model, tokenizer, constraint):
     print("="*60)
     print(f"Constraint: {constraint[:80]}...")
     
-    prompt = prompts.VIOLATION_QUERY_PROMPT.format(constraint=constraint)
-    
-    output = generate_with_qwen(model, tokenizer, prompt, max_new_tokens=100)
-    query = parse_llm_output(output, expected_format="text")
-    
-    print(f"\n✓ Generated query: {query}")
-    
+    # Use a strict, deterministic template instead of free-form LLM queries.
+    # Heuristic: first token/word is main_entity, remainder is core_action.
+    # Template: "Later events involving {main_entity} related to {core_action}"
+    print("\nUsing strict template for violation query generation (no LLM)")
+    parts = constraint.strip().split()
+    if not parts:
+        query = constraint
+    else:
+        main_entity = parts[0]
+        core_action = " ".join(parts[1:]) if len(parts) > 1 else "events"
+        query = f"Later events involving {main_entity} related to {core_action}"
+
+    print(f"\n✓ Generated strict query: {query}")
+
     log_step(
         "generate_violation_query",
         {"constraint": constraint},
         {"query": query}
     )
-    
+
     return query
 
 
@@ -565,7 +697,8 @@ def search_for_violations_with_nli(
     constraint,
     violation_query,
     established_at,
-    reranker
+    reranker,
+    constraint_type="BACKGROUND_FACT"
 ):
     """
     Search for constraint violations using NLI filter + two-pass Qwen verification.
@@ -575,6 +708,7 @@ def search_for_violations_with_nli(
     2. Two-pass Qwen verification (removes false positives)
     3. Strict parsing logic (VIOLATES only)
     4. Always returns tuple (never None)
+    5. CONSTRAINT-TYPE-SPECIFIC validation (NEW)
     
     Args:
         vector_store: PathwayVectorStore instance
@@ -619,12 +753,20 @@ def search_for_violations_with_nli(
         chunk['rerank_score'] = float(rerank_scores[i])
     
     retrieved_chunks.sort(key=lambda x: x['rerank_score'], reverse=True)
-    top_chunks = retrieved_chunks[:config.RERANK_TOP_K]
+    # Filter out clearly low-scoring reranker results
+    filtered_chunks = [c for c in retrieved_chunks if c.get('rerank_score', 0.0) >= getattr(config, 'RERANK_MIN_SCORE', 0.0)]
+    if not filtered_chunks:
+        print(f"⚠ All reranked chunks below RERANK_MIN_SCORE ({config.RERANK_MIN_SCORE}); no candidates to check")
+        return False, None
+    top_chunks = filtered_chunks[:config.RERANK_TOP_K]
     
     print(f"Top {len(top_chunks)} chunks after reranking")
     
     # Step 3: NLI FILTERING (HIGH-RECALL FILTER WITH SCORES)
-    if nli_model is not None and nli_tokenizer is not None:
+    # EMERGENCY: Make NLI optional to test if it's causing issues
+    use_nli_filter = nli_model is not None and nli_tokenizer is not None
+    
+    if use_nli_filter:
         print(f"\n[NLI FILTER] Checking for potential contradictions...")
         from models import check_contradiction_nli
         
@@ -637,18 +779,25 @@ def search_for_violations_with_nli(
                 hypothesis=chunk['text'],
                 return_score=True
             )
-            if is_contradiction:
-                chunk['nli_score'] = nli_score  # Store score for soft aggregation
+            chunk['nli_score'] = nli_score  # Always store score
+            # Enforce NLI contradiction threshold
+            if is_contradiction and nli_score >= getattr(config, 'NLI_CONTRADICTION_THRESHOLD', 0.7):
                 nli_filtered.append(chunk)
-        
+            
         print(f"NLI filter: {len(nli_filtered)}/{len(top_chunks)} chunks flagged as potential contradictions")
         
-        if not nli_filtered:
-            print("✓ NLI found no contradictions → No violations")
-            return False, None  # Always return tuple
+        # EMERGENCY FIX: If NLI filters out everything, use top 2 chunks anyway
+        if not nli_filtered and len(top_chunks) > 0:
+            print("⚠️ NLI filtered everything - using top 2 chunks with highest NLI scores anyway")
+            top_chunks_sorted = sorted(top_chunks, key=lambda x: x.get('nli_score', 0), reverse=True)
+            nli_filtered = top_chunks_sorted[:2]
         
-        # Use NLI-filtered chunks for Qwen verification
-        top_chunks = nli_filtered
+        if nli_filtered:
+            # Use NLI-filtered chunks for Qwen verification
+            top_chunks = nli_filtered
+        else:
+            print("✓ NLI found no contradictions (above threshold) → No violations")
+            return False, None  # Always return tuple
     
     # Step 4: Get establishment context
     establishment_chunk = vector_store.get_chunk_by_position(established_at)
@@ -656,75 +805,135 @@ def search_for_violations_with_nli(
     
     # Step 5: FIRST PASS - Qwen verification (WITH INSUFFICIENT HANDLING)
     print(f"\n✓ Qwen verification (Pass 1) on {len(top_chunks)} NLI-filtered chunks...")
+
+    confirmed = []
     for i, chunk in enumerate(top_chunks, 1):
+        # Position window check (only consider within window after establishment)
+        pos = chunk.get('narrative_position', None)
+        if pos is None:
+            continue
+        if pos <= established_at or pos > established_at + getattr(config, 'VIOLATION_POSITION_WINDOW', 80):
+            print(f"  → Skipping chunk at pos={pos} (outside position window)")
+            continue
+
+        # Skip low rerank scores (safety)
+        if chunk.get('rerank_score', 0.0) < getattr(config, 'RERANK_MIN_SCORE', 0.0):
+            print(f"  → Skipping chunk at pos={pos} (rerank_score below threshold)")
+            continue
+
         prompt = prompts.VIOLATION_CHECK_PROMPT.format(
             constraint=constraint,
             establishment_context=establishment_text[:300],
             passage=chunk['text']
         )
-        
+
         output = generate_with_qwen(model, tokenizer, prompt, max_new_tokens=50)
         result = parse_llm_output(output, expected_format="text").upper()
-        
+
         print(f"  Chunk {i}: {result}")
-        
-        # Handle INSUFFICIENT evidence (soft output)
+
+        # Handle INSUFFICIENT evidence
         if result == "INSUFFICIENT":
             print(f"  → INSUFFICIENT evidence (skipping)")
             continue
-        
-        # Handle SUPPORTS (compatible with constraint)
-        if result == "SUPPORTS":
-            print(f"  → SUPPORTS constraint (no violation)")
+
+        if result != "VIOLATES":
+            print(f"  → Not a violation according to LLM ({result})")
             continue
-        
-        # STRICT PARSING: Only "VIOLATES" proceeds to second pass
-        if result == "VIOLATES":
-            # Step 6: SECOND PASS - Verify it's a TRUE violation
-            print(f"\n  [Pass 2] Verifying TRUE_VIOLATION...")
-            
-            verify_prompt = prompts.TRUE_VIOLATION_CHECK_PROMPT.format(
-                constraint=constraint,
-                evidence=chunk['text'][:400]
-            )
-            
-            verify_output = generate_with_qwen(model, tokenizer, verify_prompt, max_new_tokens=50)
-            verify_result = parse_llm_output(verify_output, expected_format="binary")
-            
-            print(f"  Second check: {verify_result}")
-            
-            # ONLY confirm if both passes agree it's a violation
-            if verify_result == "TRUE_VIOLATION":
-                # Step 7: Check for legitimate revision
-                is_revision = check_if_revision(
-                    model,
-                    tokenizer,
-                    constraint,
-                    establishment_text,
-                    chunk['text']
-                )
-                
-                if is_revision:
-                    print(f"  → REVISION (intentional change)")
-                    continue
-                
-                # CONFIRMED TRUE VIOLATION
-                position = chunk['narrative_position']
-                print(f"\n✗ VIOLATION CONFIRMED at position {position}")
-                
-                evidence = {
-                    'constraint': constraint,
-                    'established_at': established_at,
-                    'establishment_text': establishment_text[:500],
-                    'violation_position': position,
-                    'violation_text': chunk['text'][:500],
-                    'rerank_score': chunk['rerank_score'],
-                    'nli_score': chunk.get('nli_score', 0.8)  # Include NLI score for soft aggregation
-                }
-                
-                return True, evidence  # Always return tuple
-            else:
-                print(f"  → COMPATIBLE (false positive filtered)")
+
+        # CONSTRAINT-TYPE-SPECIFIC VALIDATION (CRITICAL FOR ACCURACY)
+        # Prevents: MOTIVATION violated by random scenes, BELIEF violated by neutral dialogue
+        if not validate_constraint_type_evidence(constraint_type, chunk['text']):
+            print(f"  → Rejected: {constraint_type} constraint requires specific evidence markers (not found)")
+            continue
+
+        # SECOND PASS - strict JSON verification (new prompt returns JSON)
+        print(f"\n  [Pass 2] Verifying JSON TRUE_VIOLATION for chunk at pos={pos}...")
+        verify_prompt = prompts.TRUE_VIOLATION_CHECK_PROMPT.format(
+            constraint=constraint,
+            evidence=chunk['text'][:400]
+        )
+
+        verify_output = generate_with_qwen(model, tokenizer, verify_prompt, max_new_tokens=120)
+        verify_text = parse_llm_output(verify_output, expected_format="text")
+
+        # Try to parse JSON result
+        try:
+            verify_json = json.loads(verify_text)
+        except Exception as e:
+            print(f"  → Failed to parse JSON from verifier: {e}; raw: {verify_text[:200]}")
+            continue
+
+        # Expected boolean fields
+        same_entity = bool(verify_json.get('same_entity'))
+        same_event = bool(verify_json.get('same_event'))
+        logical_opposition = bool(verify_json.get('logical_opposition'))
+        time_conflict = bool(verify_json.get('time_conflict'))
+        final_decision = verify_json.get('final', '').upper()
+
+        print(f"  Verifier JSON: same_entity={same_entity}, same_event={same_event}, logical_opposition={logical_opposition}, time_conflict={time_conflict}, final={final_decision}")
+
+        # Enforce that final_decision is VIOLATES and all booleans true
+        if final_decision != "VIOLATES" or not (same_entity and same_event and logical_opposition and time_conflict):
+            print(f"  → Verifier did not confirm as a strict violation (final={final_decision})")
+            continue
+
+        # Additional lightweight checks: entity overlap and predicate conflict
+        try:
+            from difflib import SequenceMatcher
+            def entity_overlap(text, entity_guess):
+                if not entity_guess:
+                    return False
+                return entity_guess.lower() in text.lower()
+
+            def predicate_conflict(est_text, cand_text):
+                # simple negation/opposition detector
+                negation_keywords = ["not", "never", "no", "without", "none", "cannot", "can't", "won't"]
+                for kw in negation_keywords:
+                    if kw in cand_text.lower() and kw not in est_text.lower():
+                        return True
+                # polarity mismatch heuristics (e.g., 'is' vs 'is not')
+                if " is " in est_text.lower() and " is not " in cand_text.lower():
+                    return True
+                return False
+
+            # Heuristic entity guess: first word of constraint
+            entity_guess = constraint.strip().split()[0] if constraint.strip() else ""
+            if not entity_overlap(chunk['text'], entity_guess):
+                print(f"  → Rejected: entity overlap check failed for guess='{entity_guess}'")
+                continue
+
+            if not predicate_conflict(establishment_text, chunk['text']):
+                print(f"  → Rejected: predicate_conflict check failed (no clear opposition detected)")
+                continue
+        except Exception:
+            # If helper checks fail for any reason, be conservative and continue
+            print("  → Entity/predicate heuristics failed unexpectedly; skipping this candidate")
+            continue
+
+        # Passed all checks: record confirmed violation
+        confirmed.append({
+            'constraint': constraint,
+            'established_at': established_at,
+            'establishment_text': establishment_text[:500],
+            'violation_position': pos,
+            'violation_text': chunk['text'][:500],
+            'rerank_score': chunk['rerank_score'],
+            'nli_score': chunk.get('nli_score', 0.0)
+        })
+
+        print(f"  → Confirmed strict violation (collected {len(confirmed)})")
+
+        # Continue scanning to collect multiple confirmations (we require >= MIN_CONFIRMED_VIOLATIONS)
+
+    # Final decision: require at least MIN_CONFIRMED_VIOLATIONS confirmations
+    if len(confirmed) >= getattr(config, 'MIN_CONFIRMED_VIOLATIONS', 2):
+        # Aggregate evidence: return list of confirmations as evidence
+        print(f"\n✗ Statement marked INCONSISTENT: {len(confirmed)} confirmed violations (required {config.MIN_CONFIRMED_VIOLATIONS})")
+        return True, {'confirmed_violations': confirmed}
+    else:
+        print(f"\n✓ No sufficient confirmed violations found ({len(confirmed)} < {config.MIN_CONFIRMED_VIOLATIONS})")
+        return False, None  # Always return tuple
     
     # No violation found
     print("\n✓ No violations detected")
@@ -1129,7 +1338,8 @@ def check_constraint_consistency(
                 constraint_text,
                 violation_query,
                 established_at,
-                reranker
+                reranker,
+                constraint_type=constraint_type  # Pass constraint type for type-specific validation
             )
         else:
             print(f"\n⚠ WARNING: NLI model not available, using legacy search")
@@ -1230,19 +1440,87 @@ def check_constraint_consistency(
             'avg_violation_score': avg_violation_score
         }
     
-    # Step 3 (Binary mode fallback): No violations found
-    print(f"\n{'='*80}")
-    print("✓ ALL CONSTRAINTS CONSISTENT")
-    print(f"{'='*80}")
-    print(f"Checked {len(constraints)} constraint(s)")
-    print("No violations detected")
-    print("="*80)
+    # Step 3 (Binary mode fallback): No violations found - BUT NEED ENTAILMENT PROOF
+    # CRITICAL: "No contradiction" ≠ "Consistent"
+    # We must find positive entailment evidence to return CONSISTENT
     
-    return {
-        'prediction': 1,
-        'constraints': constraints,
-        'violations': [],
-        'summary': "All constraints consistent"
-    }
+    print(f"\n{'='*80}")
+    print("CHECKING FOR POSITIVE ENTAILMENT PROOF")
+    print(f"{'='*80}")
+    
+    entailment_found = False
+    entailment_evidence = None
+    
+    if nli_model is not None and nli_tokenizer is not None:
+        # Check entailment for each constraint
+        for constraint_obj in constraints:
+            constraint_text = constraint_obj['constraint']
+            
+            # Find establishment for this constraint
+            establishment = find_constraint_establishment(
+                vector_store,
+                model,
+                tokenizer,
+                constraint_text,
+                reranker
+            )
+            
+            established_at = establishment.get('position', 0) if establishment['found'] else 0
+            
+            is_entailed, entailment_score, evidence_text = check_entailment_for_constraint(
+                nli_model,
+                nli_tokenizer,
+                vector_store,
+                constraint_text,
+                established_at
+            )
+            
+            if is_entailed:
+                entailment_found = True
+                entailment_evidence = evidence_text
+                print(f"✓ Entailment confirmed for: {constraint_text[:60]}...")
+                break  # One strong entailment is enough
+            else:
+                print(f"⚠ No entailment found for: {constraint_text[:60]}... (score: {entailment_score:.3f})")
+    else:
+        # No NLI model - cannot verify entailment, use pessimistic default
+        print("⚠ NLI model unavailable - cannot verify entailment")
+        print("  Using pessimistic default: INCONSISTENT")
+    
+    # FINAL DECISION LOGIC (PESSIMISTIC DEFAULT)
+    # violations >= MIN → INCONSISTENT
+    # entailment_found → CONSISTENT  
+    # else → INCONSISTENT (unknown defaults to inconsistent)
+    
+    if entailment_found:
+        print(f"\n{'='*80}")
+        print("✓ CONSISTENT (entailment evidence found)")
+        print(f"{'='*80}")
+        print(f"Checked {len(constraints)} constraint(s)")
+        print("No violations detected AND positive entailment confirmed")
+        print("="*80)
+        
+        return {
+            'prediction': 1,
+            'constraints': constraints,
+            'violations': [],
+            'summary': "Consistent (entailment confirmed)",
+            'entailment_evidence': entailment_evidence
+        }
+    else:
+        print(f"\n{'='*80}")
+        print("✗ INCONSISTENT (no entailment proof found)")
+        print(f"{'='*80}")
+        print(f"Checked {len(constraints)} constraint(s)")
+        print("No violations, but also no positive entailment evidence")
+        print("Pessimistic default: INCONSISTENT")
+        print("="*80)
+        
+        return {
+            'prediction': 0,  # PESSIMISTIC DEFAULT
+            'constraints': constraints,
+            'violations': [],
+            'summary': "Inconsistent (no entailment proof - pessimistic default)"
+        }
 
 

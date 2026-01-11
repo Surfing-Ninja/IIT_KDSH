@@ -32,8 +32,9 @@ CHUNK_OVERLAP = 400  # overlap (~100 tokens) to preserve context boundaries
 # ============================================================================
 
 # Retrieval parameters (OPTIMIZED FOR ACCURACY)
-RETRIEVAL_TOP_K = 12  # Reduced from 20 to avoid over-retrieval
-RERANK_TOP_K = 4  # Reduced from 5 to focus on best matches
+RETRIEVAL_TOP_K = 40  # Raised to increase recall (user requested)
+RERANK_TOP_K = 5  # Narrower rerank set to focus on top candidates
+RERANK_MIN_SCORE = 0.15  # Minimum reranker score to consider a candidate
 
 # BM25 hybrid retrieval
 BM25_ENABLED = True  # Lexical fallback
@@ -66,16 +67,15 @@ DO_SAMPLE = True  # Required for temperature > 0
 # ============================================================================
 
 # Max constraints to extract per statement (CAPPED FOR ACCURACY)
-MAX_CONSTRAINTS_PER_STATEMENT = 3  # Reduced from 5 - more constraints = more false positives
+MAX_CONSTRAINTS_PER_STATEMENT = 2  # Strict cap as requested
 
 # Violatable constraint types (CRITICAL FOR ACCURACY)
-VIOLATABLE_TYPES = {"PROHIBITION", "BELIEF"}  # Only these can have violations
-# MOTIVATION, BACKGROUND_FACT, FEAR - skip violation search
+VIOLATABLE_TYPES = {"PROHIBITION", "BELIEF", "MOTIVATION", "FEAR"}  # Broadened - only skip BACKGROUND_FACT
+# BACKGROUND_FACT - skip violation search (time-bound descriptive statements)
 
 # NLI threshold configuration (OPTIMIZED FOR MNLI ON LONG TEXT)
-NLI_STRONG_THRESHOLD = 0.75  # High confidence contradiction
-NLI_WEAK_THRESHOLD = 0.60  # Potential contradiction
-NLI_IGNORE_BELOW = 0.60  # Below this, ignore
+NLI_CONTRADICTION_THRESHOLD = 0.70  # Threshold for considering NLI contradiction (user requested)
+NLI_ENTAILMENT_THRESHOLD = 0.60  # Threshold for positive entailment confirmation (REQUIRED for CONSISTENT)
 
 # Violation scoring weights (SOFT AGGREGATION)
 SCORE_WEIGHT_NLI = 0.5
@@ -83,17 +83,54 @@ SCORE_WEIGHT_RERANK = 0.3
 SCORE_WEIGHT_LLM = 0.2
 
 # Final decision threshold (CALIBRATED)
-VIOLATION_DECISION_THRESHOLD = 0.7  # Score >= 0.7 = violation
+# Final decision threshold (unused in strict voting mode)
+VIOLATION_DECISION_THRESHOLD = 0.5  # kept for compatibility
 
 # Legacy binary mode (for comparison)
-USE_BINARY_MODE = False  # Set True to use old "any violation = 0" logic
-USE_SOFT_SCORING = True  # Set False to disable soft aggregation
+USE_BINARY_MODE = True  # Default to binary mode, but pipeline will enforce strict voting
+USE_SOFT_SCORING = False  # Disable soft scoring - not used with strict gating
 
 # Minimum confidence for violation detection (legacy)
 VIOLATION_CONFIDENCE_THRESHOLD = 0.8
 
 # Maximum search iterations for violation detection
-MAX_VIOLATION_SEARCH_ITERATIONS = 1  # Disabled refinement - not helping, triples runtime
+MAX_VIOLATION_SEARCH_ITERATIONS = 1  # Keep refinement disabled to limit runtime
+
+# Position window (how far after establishment we consider violations)
+VIOLATION_POSITION_WINDOW = 80  # Only consider violations within this many positions after establishment
+
+# Minimum number of confirmed violations required to mark statement inconsistent
+MIN_CONFIRMED_VIOLATIONS = 2
 
 # Minimum retrieval score to auto-accept establishment (bypass LLM check)
 ESTABLISHMENT_AUTO_ACCEPT_SCORE = 0.65  # High semantic match = likely established
+
+# ============================================================================
+# CONSTRAINT-TYPE-SPECIFIC VALIDATION
+# ============================================================================
+
+# Keywords required for MOTIVATION constraint violations (mental state language)
+MOTIVATION_KEYWORDS = {
+    "wanted", "want", "wants", "desire", "desires", "desired", "intend", "intends",
+    "intended", "intention", "goal", "goals", "aim", "aims", "aimed", "seek", "seeks",
+    "sought", "hope", "hopes", "hoped", "plan", "plans", "planned", "purpose",
+    "motivation", "motivated", "drive", "driven", "aspire", "aspires", "aspired"
+}
+
+# Keywords required for BELIEF constraint violations (belief markers)
+BELIEF_KEYWORDS = {
+    "believe", "believes", "believed", "think", "thinks", "thought", "feel", "feels",
+    "felt", "know", "knows", "knew", "assume", "assumes", "assumed", "suppose",
+    "supposes", "supposed", "consider", "considers", "considered", "opinion",
+    "convinced", "certain", "sure", "doubt", "doubts", "doubted", "suspect",
+    "suspects", "suspected", "trust", "trusts", "trusted", "faith"
+}
+
+# Keywords required for PROHIBITION constraint violations (action occurring)
+PROHIBITION_ACTION_KEYWORDS = {
+    "did", "does", "done", "went", "go", "goes", "made", "make", "makes",
+    "took", "take", "takes", "gave", "give", "gives", "came", "come", "comes",
+    "left", "leave", "leaves", "entered", "enter", "enters", "opened", "open",
+    "opens", "closed", "close", "closes", "started", "start", "starts",
+    "finished", "finish", "finishes", "completed", "complete", "completes"
+}
