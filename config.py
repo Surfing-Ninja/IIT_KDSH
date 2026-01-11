@@ -31,9 +31,9 @@ CHUNK_OVERLAP = 400  # overlap (~100 tokens) to preserve context boundaries
 # RETRIEVAL CONFIGURATION
 # ============================================================================
 
-# Retrieval parameters
-RETRIEVAL_TOP_K = 20  # Initial dense retrieval
-RERANK_TOP_K = 5  # After reranking (before LLM)
+# Retrieval parameters (OPTIMIZED FOR ACCURACY)
+RETRIEVAL_TOP_K = 12  # Reduced from 20 to avoid over-retrieval
+RERANK_TOP_K = 4  # Reduced from 5 to focus on best matches
 
 # BM25 hybrid retrieval
 BM25_ENABLED = True  # Lexical fallback
@@ -65,10 +65,31 @@ DO_SAMPLE = True  # Required for temperature > 0
 # CONSTRAINT ENGINE CONFIGURATION
 # ============================================================================
 
-# Max constraints to extract per statement
-MAX_CONSTRAINTS_PER_STATEMENT = 5
+# Max constraints to extract per statement (CAPPED FOR ACCURACY)
+MAX_CONSTRAINTS_PER_STATEMENT = 3  # Reduced from 5 - more constraints = more false positives
 
-# Minimum confidence for violation detection
+# Violatable constraint types (CRITICAL FOR ACCURACY)
+VIOLATABLE_TYPES = {"PROHIBITION", "BELIEF"}  # Only these can have violations
+# MOTIVATION, BACKGROUND_FACT, FEAR - skip violation search
+
+# NLI threshold configuration (OPTIMIZED FOR MNLI ON LONG TEXT)
+NLI_STRONG_THRESHOLD = 0.75  # High confidence contradiction
+NLI_WEAK_THRESHOLD = 0.60  # Potential contradiction
+NLI_IGNORE_BELOW = 0.60  # Below this, ignore
+
+# Violation scoring weights (SOFT AGGREGATION)
+SCORE_WEIGHT_NLI = 0.5
+SCORE_WEIGHT_RERANK = 0.3
+SCORE_WEIGHT_LLM = 0.2
+
+# Final decision threshold (CALIBRATED)
+VIOLATION_DECISION_THRESHOLD = 0.7  # Score >= 0.7 = violation
+
+# Legacy binary mode (for comparison)
+USE_BINARY_MODE = False  # Set True to use old "any violation = 0" logic
+USE_SOFT_SCORING = True  # Set False to disable soft aggregation
+
+# Minimum confidence for violation detection (legacy)
 VIOLATION_CONFIDENCE_THRESHOLD = 0.8
 
 # Maximum search iterations for violation detection

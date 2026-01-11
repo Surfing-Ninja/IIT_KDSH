@@ -126,7 +126,7 @@ Query: Sarah home residence city London Berlin not Paris
 Now generate query for the given constraint (output ONLY the query text):"""
 
 # ============================================================================
-# 4. VIOLATION CHECK (Binary Output)
+# 4. VIOLATION CHECK (Soft Output with INSUFFICIENT)
 # ============================================================================
 
 VIOLATION_CHECK_PROMPT = """Does this passage VIOLATE the constraint?
@@ -140,6 +140,8 @@ Passage (later in narrative):
 
 RULES:
 - VIOLATES: Passage directly contradicts the constraint (logical inconsistency)
+- SUPPORTS: Passage confirms or is compatible with the constraint
+- INSUFFICIENT: Not enough context to determine (vague, ambiguous, or unrelated)
 - Does NOT qualify as violation if: synonyms, stylistic variation, or justified narrative change
 
 EXAMPLES:
@@ -152,14 +154,19 @@ Answer: VIOLATES
 Constraint: "The box is red"
 Establishment: "The red box was placed on the shelf."
 Passage: "She opened the crimson container."
-Answer: DOES_NOT_VIOLATE (synonym)
+Answer: SUPPORTS (synonym)
 
 Constraint: "Sarah hates dogs"
 Establishment: "Sarah always avoided dogs."
 Passage: "After therapy, Sarah adopted a puppy."
-Answer: DOES_NOT_VIOLATE (justified change)
+Answer: SUPPORTS (justified change)
 
-Output ONLY one word (VIOLATES or DOES_NOT_VIOLATE):"""
+Constraint: "Mike owns a car"
+Establishment: "Mike drove his car to work."
+Passage: "The weather was nice that day."
+Answer: INSUFFICIENT (unrelated)
+
+Output ONLY one word (VIOLATES, SUPPORTS, or INSUFFICIENT):"""
 
 # ============================================================================
 # 5. REVISION CHECK (Binary Output)
@@ -194,6 +201,49 @@ Passage: "The box turned blue after the magic spell."
 Answer: REVISION (explained change)
 
 Output ONLY one word (REVISION or VIOLATION):"""
+
+# ============================================================================
+# 5.5 TWO-PASS VERIFICATION (Second Check for TRUE VIOLATIONS)
+# ============================================================================
+
+TRUE_VIOLATION_CHECK_PROMPT = """You previously judged that this passage VIOLATES a constraint.
+
+Now verify: Does this evidence make the constraint **logically impossible** to be true,
+or could both statements coexist without contradiction?
+
+Constraint:
+"{constraint}"
+
+Evidence from narrative:
+"{evidence}"
+
+RULES:
+- TRUE_VIOLATION: The evidence makes the constraint factually impossible
+- COMPATIBLE: Both could be true (different time, perspective, or interpretation)
+
+EXAMPLES:
+
+Constraint: "John is a doctor"
+Evidence: "Dr. John performed surgery at the hospital"
+Answer: COMPATIBLE (supports, not contradicts)
+
+Constraint: "John has never been to Paris"
+Evidence: "John walked through the streets of Paris"
+Answer: TRUE_VIOLATION (logically impossible)
+
+Constraint: "Sarah hates dogs"
+Evidence: "Sarah loved playing with her neighbor's puppy"
+Answer: TRUE_VIOLATION (opposite emotion)
+
+Constraint: "The box is red"
+Evidence: "The crimson box sat on the shelf"
+Answer: COMPATIBLE (synonym, same fact)
+
+Constraint: "He was eighteen in Tasmania"
+Evidence: "At age twenty-five, he lived in Sydney"
+Answer: COMPATIBLE (different times, both can be true)
+
+Output ONLY one word (TRUE_VIOLATION or COMPATIBLE):"""
 
 # ============================================================================
 # 6. RETRIEVAL QUALITY CHECK (Binary Output)

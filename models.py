@@ -166,3 +166,89 @@ def generate_with_qwen(model, tokenizer, prompt, max_new_tokens=None, debug=Fals
         print("="*80)
     
     return response.strip()
+
+
+def load_nli_model():
+    """
+    Load RoBERTa-large-MNLI for contradiction detection (high-recall filter).
+    
+    This model is used BEFORE Qwen to filter out chunks that are clearly
+    not contradictions. It has high recall (catches most contradictions)
+    but lower precision (may flag non-contradictions).
+    
+    Purpose:
+    - Acts as a fast, high-recall filter
+    - Reduces load on Qwen by eliminating obvious non-contradictions
+    - Trained specifically for entailment/contradiction tasks
+    
+    Returns:
+        AutoModelForSequenceClassification: NLI model for contradiction detection
+    """
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    
+    model_name = "roberta-large-mnli"
+    
+    print(f"Loading {model_name} for NLI contradiction filtering...")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    
+    # Move to GPU if available
+    if torch.cuda.is_available():
+        model = model.to("cuda")
+    
+    model.eval()
+    
+    print(f"✓ NLI model loaded on {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+    
+    return model, tokenizer
+
+
+def check_contradiction_nli(nli_model, nli_tokenizer, premise, hypothesis, return_score=False):
+    """
+    Use NLI model to check if hypothesis contradicts premise.
+    
+    This is a HIGH-RECALL filter - it will flag anything that looks
+    oppositional, even if it's not a true contradiction.
+    
+    Args:
+        nli_model: RoBERTa-large-MNLI model
+        nli_tokenizer: Corresponding tokenizer
+        premise: The constraint/established fact
+        hypothesis: The chunk to check
+        return_score: If True, return (is_contradiction, score); else just bool
+        
+    Returns:
+        bool or tuple: True if potential contradiction, or (bool, float) if return_score=True
+    """
+    import config
+    
+    # Tokenize input
+    inputs = nli_tokenizer(
+        premise,
+        hypothesis,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+        padding=True
+    )
+    
+    # Move to same device as model
+    inputs = {k: v.to(nli_model.device) for k, v in inputs.items()}
+    
+    # Get predictions
+    with torch.no_grad():
+        outputs = nli_model(**inputs)
+        logits = outputs.logits
+    
+    # RoBERTa-large-MNLI labels: 0=contradiction, 1=neutral, 2=entailment
+    # We use softmax to get probability distribution
+    probs = torch.softmax(logits, dim=1)[0]
+    contradiction_score = probs[0].item()  # Probability of contradiction
+    
+    # Return score or threshold decision
+    if return_score:
+        return contradiction_score >= config.NLI_WEAK_THRESHOLD, contradiction_score
+    else:
+        # High-recall mode: flag if score >= weak threshold
+        return contradiction_score >= config.NLI_WEAK_THRESHOLD

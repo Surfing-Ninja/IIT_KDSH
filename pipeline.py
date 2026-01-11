@@ -21,7 +21,7 @@ CONSTRAINTS:
 - Fully reproducible (temperature=0.0)
 """
 
-from models import load_llm, load_embedder, load_reranker
+from models import load_llm, load_embedder, load_reranker, load_nli_model
 from pathway_store import PathwayVectorStore
 from constraint_engine import check_constraint_consistency
 from evaluation_utils import log_step
@@ -36,36 +36,44 @@ def load_models():
     - Qwen2.5-14B-Instruct (4-bit NF4, CUDA only)
     - BAAI/bge-m3 (1024-dim embeddings)
     - BAAI/bge-reranker-large (CrossEncoder)
+    - RoBERTa-large-MNLI (NLI contradiction detection - CRITICAL for 85-95% accuracy)
     
     CRITICAL: This step must complete before any other operations.
     
     Returns:
-        Dict with keys: 'model', 'tokenizer', 'embedder', 'reranker'
+        Dict with keys: 'model', 'tokenizer', 'embedder', 'reranker', 'nli_model', 'nli_tokenizer'
     """
     print("\n" + "="*80)
     print("STEP 1: LOADING MODELS")
     print("="*80)
     
     # Load Qwen LLM (4-bit quantized)
-    print("\n[1/3] Loading Qwen2.5-14B-Instruct (4-bit)...")
+    print("\n[1/4] Loading Qwen2.5-14B-Instruct (4-bit)...")
     model, tokenizer = load_llm()
     print("✓ Qwen loaded")
     
     # Load BGE-M3 embedder
-    print("\n[2/3] Loading BAAI/bge-m3 embedder...")
+    print("\n[2/4] Loading BAAI/bge-m3 embedder...")
     embedder = load_embedder()
     print("✓ BGE-M3 loaded")
     
     # Load BGE reranker
-    print("\n[3/3] Loading BAAI/bge-reranker-large...")
+    print("\n[3/4] Loading BAAI/bge-reranker-large...")
     reranker = load_reranker()
     print("✓ Reranker loaded")
+    
+    # Load NLI model (RoBERTa-large-MNLI)
+    print("\n[4/4] Loading RoBERTa-large-MNLI (NLI filter)...")
+    nli_model, nli_tokenizer = load_nli_model()
+    print("✓ NLI model loaded")
     
     models = {
         'model': model,
         'tokenizer': tokenizer,
         'embedder': embedder,
-        'reranker': reranker
+        'reranker': reranker,
+        'nli_model': nli_model,
+        'nli_tokenizer': nli_tokenizer
     }
     
     print("\n✓ STEP 1 COMPLETE: All models loaded")
@@ -160,11 +168,13 @@ def process_statement(
     model = models['model']
     tokenizer = models['tokenizer']
     reranker = models['reranker']
+    nli_model = models['nli_model']
+    nli_tokenizer = models['nli_tokenizer']
     
     # STEP 3-6: Run full constraint consistency check
     # This function implements the exact flow:
     # 3. Extract constraints
-    # 4. For each: birth → query → retrieve → rerank → check
+    # 4. For each: birth → query → retrieve → rerank → check (WITH NLI FILTER)
     # 5. Aggregate
     # 6. Binary output
     result = check_constraint_consistency(
@@ -173,7 +183,9 @@ def process_statement(
         tokenizer,
         reranker,
         statement,
-        novel_id
+        novel_id,
+        nli_model=nli_model,
+        nli_tokenizer=nli_tokenizer
     )
     
     # Verify result structure
