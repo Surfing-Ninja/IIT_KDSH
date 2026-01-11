@@ -47,51 +47,18 @@ def validate_constraint_type_evidence(constraint_type, chunk_text):
     """
     Validate that the evidence chunk contains appropriate markers for the constraint type.
     
-    This prevents systematic false positives where:
-    - MOTIVATION constraints get "violated" by random narrative scenes
-    - BELIEF constraints get violated by neutral dialogue
+    DISABLED: Keyword-based validation is too brittle for literary contradictions.
+    Literary contradictions are implicit, not keyword-driven.
+    Let NLI + LLM verifier decide instead.
     
     Args:
         constraint_type: One of BACKGROUND_FACT, PROHIBITION, MOTIVATION, BELIEF, FEAR
         chunk_text: The candidate violation text to validate
         
     Returns:
-        bool: True if chunk contains appropriate evidence markers for this constraint type
+        bool: Always True - validation delegated to NLI + LLM
     """
-    text_lower = chunk_text.lower()
-    
-    if constraint_type.upper() == "MOTIVATION":
-        # Require mental state / intention language
-        keywords = getattr(config, 'MOTIVATION_KEYWORDS', set())
-        if not keywords:
-            return True  # No keywords configured = accept all
-        return any(kw in text_lower for kw in keywords)
-    
-    elif constraint_type.upper() == "BELIEF":
-        # Require belief markers (think, believe, feel, know, etc.)
-        keywords = getattr(config, 'BELIEF_KEYWORDS', set())
-        if not keywords:
-            return True
-        return any(kw in text_lower for kw in keywords)
-    
-    elif constraint_type.upper() == "PROHIBITION":
-        # Require action-indicating language (did, went, made, etc.)
-        keywords = getattr(config, 'PROHIBITION_ACTION_KEYWORDS', set())
-        if not keywords:
-            return True
-        return any(kw in text_lower for kw in keywords)
-    
-    elif constraint_type.upper() == "BACKGROUND_FACT":
-        # Background facts need event-level contradiction - accept any chunk
-        # (the contradiction detection itself handles this)
-        return True
-    
-    elif constraint_type.upper() == "FEAR":
-        # Fear requires emotional or behavioral markers
-        fear_markers = {"afraid", "fear", "scared", "terrified", "panic", "dread", "anxious", "worried"}
-        return any(kw in text_lower for kw in fear_markers)
-    
-    # Unknown type - accept by default
+    # DISABLED: Return True for all types - let NLI + LLM decide
     return True
 
 
@@ -873,42 +840,10 @@ def search_for_violations_with_nli(
 
         print(f"  Verifier JSON: same_entity={same_entity}, same_event={same_event}, logical_opposition={logical_opposition}, time_conflict={time_conflict}, final={final_decision}")
 
-        # Enforce that final_decision is VIOLATES and all booleans true
-        if final_decision != "VIOLATES" or not (same_entity and same_event and logical_opposition and time_conflict):
-            print(f"  → Verifier did not confirm as a strict violation (final={final_decision})")
-            continue
-
-        # Additional lightweight checks: entity overlap and predicate conflict
-        try:
-            from difflib import SequenceMatcher
-            def entity_overlap(text, entity_guess):
-                if not entity_guess:
-                    return False
-                return entity_guess.lower() in text.lower()
-
-            def predicate_conflict(est_text, cand_text):
-                # simple negation/opposition detector
-                negation_keywords = ["not", "never", "no", "without", "none", "cannot", "can't", "won't"]
-                for kw in negation_keywords:
-                    if kw in cand_text.lower() and kw not in est_text.lower():
-                        return True
-                # polarity mismatch heuristics (e.g., 'is' vs 'is not')
-                if " is " in est_text.lower() and " is not " in cand_text.lower():
-                    return True
-                return False
-
-            # Heuristic entity guess: first word of constraint
-            entity_guess = constraint.strip().split()[0] if constraint.strip() else ""
-            if not entity_overlap(chunk['text'], entity_guess):
-                print(f"  → Rejected: entity overlap check failed for guess='{entity_guess}'")
-                continue
-
-            if not predicate_conflict(establishment_text, chunk['text']):
-                print(f"  → Rejected: predicate_conflict check failed (no clear opposition detected)")
-                continue
-        except Exception:
-            # If helper checks fail for any reason, be conservative and continue
-            print("  → Entity/predicate heuristics failed unexpectedly; skipping this candidate")
+        # SIMPLIFIED LOGIC: Only require same_entity AND logical_opposition
+        # Many contradictions don't involve time or repeat the same event phrasing
+        if final_decision != "VIOLATES" or not (same_entity and logical_opposition):
+            print(f"  → Verifier did not confirm as a strict violation (final={final_decision}, same_entity={same_entity}, logical_opposition={logical_opposition})")
             continue
 
         # Passed all checks: record confirmed violation
@@ -927,17 +862,13 @@ def search_for_violations_with_nli(
         # Continue scanning to collect multiple confirmations (we require >= MIN_CONFIRMED_VIOLATIONS)
 
     # Final decision: require at least MIN_CONFIRMED_VIOLATIONS confirmations
-    if len(confirmed) >= getattr(config, 'MIN_CONFIRMED_VIOLATIONS', 2):
+    if len(confirmed) >= getattr(config, 'MIN_CONFIRMED_VIOLATIONS', 1):
         # Aggregate evidence: return list of confirmations as evidence
         print(f"\n✗ Statement marked INCONSISTENT: {len(confirmed)} confirmed violations (required {config.MIN_CONFIRMED_VIOLATIONS})")
         return True, {'confirmed_violations': confirmed}
     else:
         print(f"\n✓ No sufficient confirmed violations found ({len(confirmed)} < {config.MIN_CONFIRMED_VIOLATIONS})")
         return False, None  # Always return tuple
-    
-    # No violation found
-    print("\n✓ No violations detected")
-    return False, None  # Always return tuple
 
 
 def search_for_violations(
@@ -1440,87 +1371,25 @@ def check_constraint_consistency(
             'avg_violation_score': avg_violation_score
         }
     
-    # Step 3 (Binary mode fallback): No violations found - BUT NEED ENTAILMENT PROOF
-    # CRITICAL: "No contradiction" ≠ "Consistent"
-    # We must find positive entailment evidence to return CONSISTENT
+    # Step 3 (Binary mode): No violations found = CONSISTENT
+    # CORRECTED LOGIC: The task is violation detection, not entailment proving
+    # - If violation found → INCONSISTENT
+    # - If no violation found → CONSISTENT
+    # This matches the ~63% consistent class prior in the dataset
     
     print(f"\n{'='*80}")
-    print("CHECKING FOR POSITIVE ENTAILMENT PROOF")
+    print("✓ NO VIOLATIONS DETECTED → CONSISTENT")
     print(f"{'='*80}")
+    print(f"Checked {len(constraints)} constraint(s)")
+    print("No violations found in any constraint")
+    print("="*80)
     
-    entailment_found = False
-    entailment_evidence = None
-    
-    if nli_model is not None and nli_tokenizer is not None:
-        # Check entailment for each constraint
-        for constraint_obj in constraints:
-            constraint_text = constraint_obj['constraint']
-            
-            # Find establishment for this constraint
-            establishment = find_constraint_establishment(
-                vector_store,
-                model,
-                tokenizer,
-                constraint_text,
-                reranker
-            )
-            
-            established_at = establishment.get('position', 0) if establishment['found'] else 0
-            
-            is_entailed, entailment_score, evidence_text = check_entailment_for_constraint(
-                nli_model,
-                nli_tokenizer,
-                vector_store,
-                constraint_text,
-                established_at
-            )
-            
-            if is_entailed:
-                entailment_found = True
-                entailment_evidence = evidence_text
-                print(f"✓ Entailment confirmed for: {constraint_text[:60]}...")
-                break  # One strong entailment is enough
-            else:
-                print(f"⚠ No entailment found for: {constraint_text[:60]}... (score: {entailment_score:.3f})")
-    else:
-        # No NLI model - cannot verify entailment, use pessimistic default
-        print("⚠ NLI model unavailable - cannot verify entailment")
-        print("  Using pessimistic default: INCONSISTENT")
-    
-    # FINAL DECISION LOGIC (PESSIMISTIC DEFAULT)
-    # violations >= MIN → INCONSISTENT
-    # entailment_found → CONSISTENT  
-    # else → INCONSISTENT (unknown defaults to inconsistent)
-    
-    if entailment_found:
-        print(f"\n{'='*80}")
-        print("✓ CONSISTENT (entailment evidence found)")
-        print(f"{'='*80}")
-        print(f"Checked {len(constraints)} constraint(s)")
-        print("No violations detected AND positive entailment confirmed")
-        print("="*80)
-        
-        return {
-            'prediction': 1,
-            'constraints': constraints,
-            'violations': [],
-            'summary': "Consistent (entailment confirmed)",
-            'entailment_evidence': entailment_evidence
-        }
-    else:
-        print(f"\n{'='*80}")
-        print("✗ INCONSISTENT (no entailment proof found)")
-        print(f"{'='*80}")
-        print(f"Checked {len(constraints)} constraint(s)")
-        print("No violations, but also no positive entailment evidence")
-        print("Pessimistic default: INCONSISTENT")
-        print("="*80)
-        
-        return {
-            'prediction': 0,  # PESSIMISTIC DEFAULT
-            'constraints': constraints,
-            'violations': [],
-            'summary': "Inconsistent (no entailment proof - pessimistic default)"
-        }
+    return {
+        'prediction': 1,  # No violation = consistent
+        'constraints': constraints,
+        'violations': [],
+        'summary': "Consistent (no violations detected)"
+    }
+
 
 

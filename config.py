@@ -69,13 +69,13 @@ DO_SAMPLE = True  # Required for temperature > 0
 # Max constraints to extract per statement (CAPPED FOR ACCURACY)
 MAX_CONSTRAINTS_PER_STATEMENT = 2  # Strict cap as requested
 
-# Violatable constraint types (CRITICAL FOR ACCURACY)
-VIOLATABLE_TYPES = {"PROHIBITION", "BELIEF", "MOTIVATION", "FEAR"}  # Broadened - only skip BACKGROUND_FACT
-# BACKGROUND_FACT - skip violation search (time-bound descriptive statements)
+# Violatable constraint types (ALL types are violatable)
+VIOLATABLE_TYPES = {"PROHIBITION", "BELIEF", "MOTIVATION", "FEAR", "BACKGROUND_FACT"}
+# Dataset treats background facts as contradictory when changed - must include them
 
 # NLI threshold configuration (OPTIMIZED FOR MNLI ON LONG TEXT)
-NLI_CONTRADICTION_THRESHOLD = 0.70  # Threshold for considering NLI contradiction (user requested)
-NLI_ENTAILMENT_THRESHOLD = 0.60  # Threshold for positive entailment confirmation (REQUIRED for CONSISTENT)
+NLI_CONTRADICTION_THRESHOLD = 0.50  # Lowered for candidate filtering (LLM verifier is final gate)
+NLI_ENTAILMENT_THRESHOLD = 0.60  # Threshold for positive entailment confirmation
 
 # Violation scoring weights (SOFT AGGREGATION)
 SCORE_WEIGHT_NLI = 0.5
@@ -100,7 +100,7 @@ MAX_VIOLATION_SEARCH_ITERATIONS = 1  # Keep refinement disabled to limit runtime
 VIOLATION_POSITION_WINDOW = 80  # Only consider violations within this many positions after establishment
 
 # Minimum number of confirmed violations required to mark statement inconsistent
-MIN_CONFIRMED_VIOLATIONS = 2
+MIN_CONFIRMED_VIOLATIONS = 1  # Single violation is enough (most contradictions are single-event)
 
 # Minimum retrieval score to auto-accept establishment (bypass LLM check)
 ESTABLISHMENT_AUTO_ACCEPT_SCORE = 0.65  # High semantic match = likely established
