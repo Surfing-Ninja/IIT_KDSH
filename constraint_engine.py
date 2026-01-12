@@ -1149,7 +1149,7 @@ def check_constraint_consistency(
     novel_id,
     nli_model=None,
     nli_tokenizer=None,
-    enable_refinement=True,
+    enable_refinement=False,  # DISABLED - refinement makes it worse
     max_refinement_attempts=2,
     logger=None
 ):
