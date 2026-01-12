@@ -212,13 +212,13 @@ You previously judged that this passage VIOLATES a constraint.
 Now verify using a strict JSON response. Output ONLY valid JSON, no extra text.
 
 Return an object with the following boolean fields and a final verdict:
-{
+{{
     "same_entity": boolean,        # whether the later passage refers to the same primary entity
     "same_event": boolean,         # whether the passage is about the same event/claim
     "logical_opposition": boolean, # whether the passage directly opposes the claim (polarity mismatch)
     "time_conflict": boolean,      # whether the passage places the event at an overlapping/contradicting time
     "final": "VIOLATES"|"DOES_NOT_VIOLATE"  # final decision; set to VIOLATES only if all booleans are true
-}
+}}
 
 RULES:
 - Output MUST be valid JSON only. No explanation, no extra text, no lists.
@@ -230,11 +230,11 @@ Evidence from narrative: {evidence}
 Examples (for developer reference only, do NOT emit these):
 Constraint: "John has never been to Paris"
 Evidence: "John walked through the streets of Paris"
-=> {"same_entity": true, "same_event": true, "logical_opposition": true, "time_conflict": true, "final": "VIOLATES"}
+=> {{"same_entity": true, "same_event": true, "logical_opposition": true, "time_conflict": true, "final": "VIOLATES"}}
 
 Constraint: "The box is red"
 Evidence: "She opened the crimson container"
-=> {"same_entity": true, "same_event": true, "logical_opposition": false, "time_conflict": false, "final": "DOES_NOT_VIOLATE"}
+=> {{"same_entity": true, "same_event": true, "logical_opposition": false, "time_conflict": false, "final": "DOES_NOT_VIOLATE"}}
 
 Output only the JSON object.
 """
